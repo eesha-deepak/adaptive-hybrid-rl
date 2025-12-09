@@ -25,22 +25,6 @@ pip install -r requirements.txt
 - Gymnasium
 - NumPy, Matplotlib
 
-## Quick Start
-
-Train a hybrid agent with soft switching:
-```bash
-python train_all_envs.py --env Swimmer-v5 --mode hybrid --switching soft
-```
-
-Train baseline methods:
-```bash
-# SAC baseline
-python train_all_envs.py --env Swimmer-v5 --mode sac
-
-# PETS baseline
-python train_all_envs.py --env Swimmer-v5 --mode pets
-```
-
 ## Repository Structure
 
 ```
