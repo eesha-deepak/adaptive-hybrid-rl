@@ -29,10 +29,7 @@ class Pusher2d(gym.Env):
         self.world = Box2D.b2World(gravity=(0, 0))
         self.pusher = None
         self.box = None
-        # Actions: x-movement, y-movement (clipped -1 to 1)
         self.action_space = spaces.Box(np.ones(2) * -1, np.ones(2), dtype=np.float32)
-        # State: pusher xy position, box xy position, pusher xy velocity, box xy velocity, goal xy position
-        # refer to _get_obs()
         self.observation_space = spaces.Box(np.ones(10) * MIN_COORD, np.ones(10) * MAX_COORD, dtype=np.float32)
         self.reset()
         self.drawer = OpencvDrawFuncs(w=240, h=180, ppm=40)
@@ -43,19 +40,16 @@ class Pusher2d(gym.Env):
         return [seed]
 
     def random_place(self):
-        """ returns [x, y] within an area slightly away from the initial box position """
         return [self.np_random.uniform(BOX_START[0] + BOX_RAD + GOAL_RAD, MAX_COORD - RAD * SIDE_GAP_MULT),
                 self.np_random.uniform(BOX_START[1] + BOX_RAD + GOAL_RAD, MAX_COORD - RAD * SIDE_GAP_MULT)]
 
     def _destroy(self):
-        """ removes instantiated Box2D entities """
         if not self.box:
             return
         self.world.DestroyBody(self.box)
         self.world.DestroyBody(self.pusher)
 
     def reset(self):
-        """ standard Gym method; returns first state of episode """
         self._destroy()
         self.pusher = self.world.CreateDynamicBody(
             position=PUSHER_START[:],
@@ -80,16 +74,16 @@ class Pusher2d(gym.Env):
         box_position = state[2:4]
         obj_coords = np.concatenate([pusher_position, box_position])
         done, reward, info = False, -1, {"done": None}
-        # check if out of bounds
+
         if np.min(obj_coords) < MIN_COORD or np.max(obj_coords) > MAX_COORD:
             reward = -1 * (MAX_STEPS - self.elapsed_steps + 2)
             done = True
             info['done'] = 'unstable simulation'
-        # check if out of time
+
         elif self.elapsed_steps >= MAX_STEPS:
             done = True
             info["done"] = "max_steps_reached"
-        # check if goal reached
+
         elif np.linalg.norm(np.array(self.box.position.tuple) - self.goal_pos) < RAD + GOAL_RAD:
             done = True
             reward = 0
@@ -104,7 +98,6 @@ class Pusher2d(gym.Env):
         return self._get_obs(), reward, done, info
 
     def step(self, action, render=False):
-        """ standard Gym method; returns s, r, d, i """
         if render:
             self.drawer.clear_screen()
             self.drawer.draw_world(self.world)
@@ -128,7 +121,6 @@ class Pusher2d(gym.Env):
         return self._get_obs(), reward, done, info
 
     def _get_obs(self):
-        """ returns current state of environment """
         state = np.concatenate([self.pusher.position.tuple,
                                 self.box.position.tuple,
                                 self.pusher.linearVelocity.tuple,
@@ -145,7 +137,7 @@ class Pusher2d(gym.Env):
         self.box.position = state[2:4]
         self.pusher.linearVelocity = state[4:6]
         self.box.linearVelocity = state[6:8]
-        if len(state) == 10: # The state can also be observation only, which does not include the goal
+        if len(state) == 10:
             self.goal_pos = state[8:10]
 
     def get_state(self):
@@ -159,7 +151,6 @@ class Pusher2d(gym.Env):
         nxt_state, _, _, _ = self.step(action)
         nxt_state = nxt_state[:8]
 
-        # Make sure there is no side effect
         self.set_state(original_state)
         self.elapsed_steps = original_elapsed_steps
         return nxt_state

@@ -1,7 +1,3 @@
-"""
-Multi-Environment Training: SAC + PETS + Hybrid
-Train from scratch on multiple environments to compare dynamics types
-"""
 import os
 import numpy as np
 import gymnasium as gym
@@ -11,31 +7,22 @@ from hybrid.agent import HybridAgent
 from sac import SACAgent
 from hybrid.planner_pets import PETSAgent
 import torch
+from hybrid.planner_pets_improved import ImprovedPETSAgent
 
 def get_device():
-    """Auto-detect GPU"""
     if torch.cuda.is_available():
         device = 'cuda'
-        print(f"🚀 Using GPU: {torch.cuda.get_device_name(0)}")
     else:
         device = 'cpu'
-        print("⚠️ Using CPU (slower)")
     return device
 
-# ============================================================================
-# ENVIRONMENT SETUP
-# ============================================================================
-
 def make_pushing2d_env():
-    """Create Pushing2D environment with Gymnasium compatibility"""
     from pusher2d import Pusher2d
     from gym_wrapper import OldGymWrapper
     return OldGymWrapper(Pusher2d())
 
 def get_env_info(env_id):
-    """Get environment information - handles both standard and custom envs"""
     try:
-        # Handle custom Pushing2D
         if env_id == "Pushing2D-v1":
             env = make_pushing2d_env()
         else:
@@ -51,15 +38,14 @@ def get_env_info(env_id):
             env.close()
         return env_info
     except Exception as e:
-        print(f"❌ Error loading {env_id}: {e}")
+        print(f"Error loading {env_id}: {e}")
         return None
 
-# Environment configurations - tuned for each environment type
 ENV_CONFIGS = {
     "Pendulum-v1": {
         "sac_steps": 100_000,
         "pets_steps": 50_000,
-        "hybrid_steps": 5000,  # Fast for testing
+        "hybrid_steps": 5000,
         "warmup_steps": 2000,
         "horizon": 15,
         "model_train_freq": 1000,
@@ -195,8 +181,8 @@ ENV_CONFIGS = {
         "dynamics": "smooth-contact",
         "description": "Quadruped locomotion - 8 legs, mix of smooth motion and ground contact, more stable than biped",
         "expected_mb_usage": "30-45%",
-        "plan_every_n_steps": 5,  # Ant is higher-dimensional (27 obs, 8 actions)
-        "cem_iterations": 3,      # May need slightly more planning
+        "plan_every_n_steps": 5,
+        "cem_iterations": 3,
         "cem_candidates": 400,
         "cem_top_candidates": 40,
     }
@@ -213,47 +199,42 @@ ENV_CONFIGS_IMPROVED = {
         "expected_sac": -150,
         "dynamics": "smooth",
         "expected_mb_usage": "60-70%",
-        "expected_pets": -200,  # Should be better now
+        "expected_pets": -200,
     },
     "LunarLanderContinuous-v3": {
         "sac_steps": 200_000,
         "hybrid_steps": 100_000,
         "warmup_steps": 5000,
-        "horizon": 5,  # Shorter!
+        "horizon": 5,
         "model_train_freq": 2000,
         "eval_freq": 10000,
         "expected_sac": 270,
         "dynamics": "contact",
         "expected_mb_usage": "20-30%",
-        "expected_pets": -100,  # Should be better than -287
+        "expected_pets": -100,
     },
     "Pushing2D-v1": {
         "sac_steps": 100_000,
         "hybrid_steps": 50_000,
         "warmup_steps": 3000,
-        "horizon": 5,  # Shorter!
+        "horizon": 5,
         "model_train_freq": 1500,
         "eval_freq": 5000,
         "expected_sac": -5,
         "dynamics": "contact",
         "expected_mb_usage": "25-35%",
-        "expected_pets": -10,  # Should match homework
+        "expected_pets": -10,
     },
 }
-
-# ============================================================================
-# SAC TRAINING
-# ============================================================================
 
 def train_sac(env_id, config, seed=0):
     """Train SAC from scratch on any environment"""
     print(f"\n{'='*70}")
-    print(f"🔷 Training SAC on {env_id}")
+    print(f"Training SAC on {env_id}")
     print(f"{'='*70}")
     print(f"Dynamics: {config['dynamics']} - {config['description']}")
     print(f"Steps: {config['sac_steps']:,}")
     
-    # Create environments
     if env_id == "Pushing2D-v1":
         env = make_pushing2d_env()
         eval_env = make_pushing2d_env()
@@ -271,7 +252,6 @@ def train_sac(env_id, config, seed=0):
         return None
     
     device = get_device()
-    # Initialize SAC
     agent = SACAgent(
         env_info,
         warmup_steps=config["warmup_steps"],
@@ -286,7 +266,6 @@ def train_sac(env_id, config, seed=0):
     ep_ret = 0
     
     for step in trange(config["sac_steps"], desc=f"SAC-{env_id}"):
-        # Random during warmup
         if agent.total_steps < agent.warmup_steps:
             action = env.action_space.sample()
         else:
@@ -313,29 +292,26 @@ def train_sac(env_id, config, seed=0):
             
             if len(returns) % 10 == 0:
                 recent = np.mean(returns[-10:])
-                print(f"\n  Episodes: {len(returns)} | Return: {recent:.2f}")
+                print(f"Episodes: {len(returns)} | Return: {recent:.2f}")
         
-        # Periodic evaluation
         if (step + 1) % config["eval_freq"] == 0:
             eval_mean, eval_std = evaluate_sac(agent, eval_env, n_episodes=10)
             eval_returns.append(eval_mean)
-            print(f"\n  📈 Eval at {step+1}: {eval_mean:.2f} ± {eval_std:.2f}")
-    
-    # Final evaluation
+            print(f"Eval at {step+1}: {eval_mean:.2f} ± {eval_std:.2f}")
+
     final_mean, final_std = evaluate_sac(agent, eval_env, n_episodes=20)
     
     print(f"\n{'='*70}")
     print(f"SAC Final: {final_mean:.2f} ± {final_std:.2f}")
     print(f"{'='*70}")
-    
-    # Save checkpoint
+
     os.makedirs("artifacts", exist_ok=True)
     ckpt_path = f"artifacts/sac_{env_id.replace('-', '_').lower()}.pth"
     torch.save({
         "actor": agent.actor.state_dict(),
         "log_alpha": agent.log_alpha.detach().cpu(),
     }, ckpt_path)
-    print(f"✅ Saved to {ckpt_path}")
+    print(f"Saved to {ckpt_path}")
     
     if hasattr(env, 'close'):
         env.close()
@@ -351,7 +327,6 @@ def train_sac(env_id, config, seed=0):
     }
 
 def evaluate_sac(agent, env, n_episodes=10):
-    """Evaluate SAC agent"""
     returns = []
     for _ in range(n_episodes):
         obs, _ = env.reset()
@@ -365,17 +340,11 @@ def evaluate_sac(agent, env, n_episodes=10):
         returns.append(ep_ret)
     return np.mean(returns), np.std(returns)
 
-# ============================================================================
-# PETS TRAINING
-# ============================================================================
-
 def train_pets_baseline(env_id, config, seed=0):
-    """Train PETS baseline"""
     print(f"\n{'='*70}")
-    print(f"🔶 Training PETS Baseline on {env_id}")
+    print(f"Training PETS Baseline on {env_id}")
     print(f"{'='*70}")
     
-    # Create environment
     if env_id == "Pushing2D-v1":
         env = make_pushing2d_env()
     else:
@@ -398,7 +367,6 @@ def train_pets_baseline(env_id, config, seed=0):
         device=device
     )
     
-    # Collect random data
     print(f"\n1. Collecting {config['warmup_steps']} random transitions...")
     obs, _ = env.reset()
     for _ in trange(config["warmup_steps"], desc="Random data"):
@@ -408,14 +376,12 @@ def train_pets_baseline(env_id, config, seed=0):
         agent.add_data(obs, action, next_obs, reward)
         obs = next_obs if not done else env.reset()[0]
     
-    print(f"✅ Collected {agent.buffer.size} samples")
+    print(f"Collected {agent.buffer.size} samples")
     
-    # Train models
     print("\n2. Training models...")
     agent.train_models(n_epochs=100)
-    print("✅ Models trained")
+    print("Models trained")
     
-    # Test planning
     print("\n3. Testing PETS planning (500 episodes)...")
     returns = []
     for ep in trange(500, desc="PETS episodes"):
@@ -451,18 +417,11 @@ def train_pets_baseline(env_id, config, seed=0):
 def train_pets_improved(env_id, config, seed=0):
     """
     Improved PETS with active learning (like homework)
-    
-    Key improvements:
-    1. TS1 trajectory sampling (6 particles)
-    2. Shorter horizon (5 steps, not 20)
-    3. Active learning loop
-    4. Smaller ensemble (2 models, not 5)
     """
     print(f"\n{'='*70}")
-    print(f"🔶 Training Improved PETS on {env_id}")
+    print(f"Training Improved PETS on {env_id}")
     print(f"{'='*70}")
     
-    # Create environment
     if env_id == "Pushing2D-v1":
         env = make_pushing2d_env()
     else:
@@ -478,10 +437,6 @@ def train_pets_improved(env_id, config, seed=0):
     
     device = get_device()
     
-    # Import improved PETS
-    from hybrid.planner_pets_improved import ImprovedPETSAgent
-    
-    # Create agent with homework hyperparameters
     agent = ImprovedPETSAgent(
         env_info,
         n_models=2,          # Homework uses 2
@@ -492,8 +447,6 @@ def train_pets_improved(env_id, config, seed=0):
         num_particles=6,     # TS1 with 6 particles
         device=device
     )
-    
-    # Phase 1: Random warmup (like homework)
     print(f"\n1. Warmup with random policy (100 episodes)...")
     warmup_returns = []
     
@@ -501,7 +454,7 @@ def train_pets_improved(env_id, config, seed=0):
         obs, _ = env.reset()
         ep_return = 0
         
-        for t in range(40):  # Max 40 steps per episode
+        for t in range(40):
             action = env.action_space.sample()
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
@@ -516,21 +469,18 @@ def train_pets_improved(env_id, config, seed=0):
         
         warmup_returns.append(ep_return)
     
-    print(f"✅ Warmup: {np.mean(warmup_returns):.2f} ± {np.std(warmup_returns):.2f}")
-    print(f"   Buffer size: {agent.buffer.size}")
+    print(f"Warmup: {np.mean(warmup_returns):.2f} ± {np.std(warmup_returns):.2f}")
+    print(f"Buffer size: {agent.buffer.size}")
     
-    # Phase 2: Train models on warmup data
     print("\n2. Training models on warmup data...")
     losses = agent.train_models(n_epochs=10, batch_size=128)
-    print(f"✅ Initial model loss: {losses[-1]:.4f}")
+    print(f"Initial model loss: {losses[-1]:.4f}")
     
-    # Phase 3: Active learning loop (like homework)
     print(f"\n3. Active learning (100 iterations)...")
     training_returns = []
     eval_returns = []
     
     for iter in trange(100, desc="Active Learning"):
-        # Collect 1 episode using current model
         obs, _ = env.reset()
         ep_return = 0
         
@@ -538,7 +488,6 @@ def train_pets_improved(env_id, config, seed=0):
             try:
                 action = agent.plan(obs)
             except:
-                # Fallback to random if planning fails
                 action = env.action_space.sample()
             
             next_obs, reward, terminated, truncated, _ = env.step(action)
@@ -553,18 +502,13 @@ def train_pets_improved(env_id, config, seed=0):
                 break
         
         training_returns.append(ep_return)
-        
-        # Retrain models on all collected data
-        # losses = agent.train_models(n_epochs=5, batch_size=128)
         losses = agent.train_models(n_epochs=10, batch_size=128)
         if losses and len(losses) > 0:
-            print(f"✅ Initial model loss: {losses[-1]:.4f}")
+            print(f"Initial model loss: {losses[-1]:.4f}")
         else:
-            print(f"✅ Models trained (no loss reported)")
+            print(f"Models trained (no loss reported)")
         
-        # Periodic evaluation
         if (iter + 1) % 10 == 0:
-            # Evaluate for 5 episodes
             eval_eps = []
             for _ in range(5):
                 obs, _ = env.reset()
@@ -586,7 +530,6 @@ def train_pets_improved(env_id, config, seed=0):
             recent_train = np.mean(training_returns[-10:])
             print(f"\n  Iter {iter+1}: Train={recent_train:.1f}, Eval={eval_mean:.1f}, Loss={losses[-1]:.4f}")
     
-    # Final evaluation (20 episodes)
     print("\n4. Final evaluation (20 episodes)...")
     final_returns = []
     
@@ -626,17 +569,11 @@ def train_pets_improved(env_id, config, seed=0):
         "final_std": final_std
     }
 
-# ============================================================================
-# HYBRID TRAINING
-# ============================================================================
-
 def train_hybrid(env_id, sac_ckpt, config, seed=0):
-    """Train hybrid agent"""
     print(f"\n{'='*70}")
-    print(f"🔷 Training Hybrid on {env_id}")
+    print(f"Training Hybrid on {env_id}")
     print(f"{'='*70}")
     
-    # Create environments
     if env_id == "Pushing2D-v1":
         env = make_pushing2d_env()
         eval_env = make_pushing2d_env()
@@ -651,16 +588,7 @@ def train_hybrid(env_id, sac_ckpt, config, seed=0):
     env_info = get_env_info(env_id)
     if env_info is None:
         return None
-    
-    # Initialize hybrid with FIXED threshold
-    # agent = HybridAgent(
-    #     env_info,
-    #     n_models=5,
-    #     horizon=config["horizon"],
-    #     sac_ckpt=sac_ckpt,
-    #     disagreement_threshold=0.05,  # ✅ FIXED: Was 0.1, now 0.05
-    #     calibration_quantile=0.9
-    # )
+
     dynamics_type = config.get("dynamics", "smooth")
     if dynamics_type == "smooth":
         base_threshold = 0.05  # Low for smooth environments (Pendulum)
@@ -675,7 +603,6 @@ def train_hybrid(env_id, sac_ckpt, config, seed=0):
     print(f"Using disagreement threshold: {base_threshold}")
 
     device = get_device()
-    # Initialize hybrid with ADAPTIVE threshold
     agent = HybridAgent(
         env_info,
         n_models=2,
@@ -686,7 +613,6 @@ def train_hybrid(env_id, sac_ckpt, config, seed=0):
         device=device
     )
     
-    # Warmup
     print(f"\n1. Warmup ({config['warmup_steps']} steps)")
     obs, _ = env.reset()
     for _ in trange(config["warmup_steps"], desc="Warmup"):
@@ -696,12 +622,10 @@ def train_hybrid(env_id, sac_ckpt, config, seed=0):
         agent.add_data(obs, action, next_obs, reward, done)
         obs = next_obs if not done else env.reset()[0]
     
-    # Train models
     print("\n2. Training models...")
     agent.train_models(n_epochs=100)
-    print("✅ Models trained")
-    
-    # Hybrid training
+    print("Models trained")
+
     print(f"\n3. Hybrid training ({config['hybrid_steps']} steps)")
     obs, _ = env.reset()
     returns = []
@@ -729,22 +653,19 @@ def train_hybrid(env_id, sac_ckpt, config, seed=0):
                 print(f"\n  Ep {len(returns)} | Return: {recent:.2f} | "
                       f"MB: {stats['model_based_pct']:.1f}%")
         
-        # Periodic updates
         if (step + 1) % config["model_train_freq"] == 0:
             agent.train_models(n_epochs=50)
         
         if (step + 1) % (config["model_train_freq"] * 2) == 0:
             agent.calibrate_threshold()
-        
-        # Evaluation
+
         if (step + 1) % config["eval_freq"] == 0:
             eval_mean, eval_std = evaluate_hybrid(agent, eval_env, n_episodes=10)
             eval_returns.append(eval_mean)
             stats = agent.get_stats()
             mb_usage_history.append(stats['model_based_pct'])
-            print(f"\n  📈 Eval: {eval_mean:.2f} | MB: {stats['model_based_pct']:.1f}%")
-    
-    # Final stats
+            print(f"Eval: {eval_mean:.2f} | MB: {stats['model_based_pct']:.1f}%")
+
     final_stats = agent.get_stats()
     final_mean = np.mean(returns[-20:])
     final_std = np.std(returns[-20:])
@@ -769,7 +690,6 @@ def train_hybrid(env_id, sac_ckpt, config, seed=0):
     }
 
 def evaluate_hybrid(agent, env, n_episodes=10):
-    """Evaluate hybrid agent"""
     returns = []
     for _ in range(n_episodes):
         obs, _ = env.reset()
@@ -783,20 +703,15 @@ def evaluate_hybrid(agent, env, n_episodes=10):
         returns.append(ep_ret)
     return np.mean(returns), np.std(returns)
 
-# ============================================================================
-# MAIN EXPERIMENT
-# ============================================================================
-
 def run_full_experiment(env_id, seed=0):
-    """Run complete experiment: SAC → PETS → Hybrid"""
     config = ENV_CONFIGS.get(env_id)
     if config is None:
-        print(f"❌ Unknown environment: {env_id}")
+        print(f"Unknown environment: {env_id}")
         print(f"Available: {list(ENV_CONFIGS.keys())}")
         return None
     
     print("\n" + "="*70)
-    print(f"🚀 FULL EXPERIMENT: {env_id}")
+    print(f"FULL EXPERIMENT: {env_id}")
     print("="*70)
     print(f"Dynamics: {config['dynamics']}")
     print(f"Description: {config['description']}")
@@ -804,46 +719,41 @@ def run_full_experiment(env_id, seed=0):
     print("="*70)
     
     results = {"env_id": env_id, "config": config}
-    
-    # 1. Train SAC
-    print("\n" + "🔷"*35)
+
+    print("\n" + "-"*35)
     print("STEP 1: Training SAC Baseline")
-    print("🔷"*35)
+    print("-"*35)
     sac_results = train_sac(env_id, config, seed)
     if sac_results is None:
         return None
     results["sac"] = sac_results
-    
-    # 2. Train PETS
-    print("\n" + "🔶"*35)
+
+    print("\n" + "-"*35)
     print("STEP 2: Training PETS Baseline")
-    print("🔶"*35)
+    print("-"*35)
     pets_results = train_pets_improved(env_id, config, seed)
     if pets_results is None:
         return None
     results["pets"] = pets_results
-    
-    # 3. Train Hybrid
-    print("\n" + "🔷"*35)
+
+    print("\n" + "-"*35)
     print("STEP 3: Training Hybrid")
-    print("🔷"*35)
+    print("-"*35)
     hybrid_results = train_hybrid(env_id, sac_results["checkpoint"], config, seed)
     if hybrid_results is None:
         return None
     results["hybrid"] = hybrid_results
-    
-    # Summary
-    print("\n" + "="*70)
-    print(f"📊 FINAL RESULTS: {env_id}")
+
+    print("\n" + "-"*70)
+    print(f"FINAL RESULTS: {env_id}")
     print("="*70)
-    print(f"SAC:     {sac_results['final_mean']:7.2f} ± {sac_results['final_std']:.2f}")
-    print(f"PETS:    {pets_results['final_mean']:7.2f} ± {pets_results['final_std']:.2f}")
-    print(f"Hybrid:  {hybrid_results['final_mean']:7.2f} ± {hybrid_results['final_std']:.2f}")
+    print(f"SAC: {sac_results['final_mean']:7.2f} ± {sac_results['final_std']:.2f}")
+    print(f"PETS: {pets_results['final_mean']:7.2f} ± {pets_results['final_std']:.2f}")
+    print(f"Hybrid: {hybrid_results['finql_mean']:7.2f} ± {hybrid_results['final_std']:.2f}")
     print(f"\nMB Usage: {hybrid_results['final_mb_pct']:.1f}%")
     print(f"Expected: {config['expected_mb_usage']}")
-    print("="*70)
-    
-    # Save results
+    print("-"*70)
+
     os.makedirs("results", exist_ok=True)
     save_path = f"results/{env_id.replace('-', '_').lower()}_full.npz"
     np.savez(save_path,
@@ -853,7 +763,7 @@ def run_full_experiment(env_id, seed=0):
              hybrid_final=hybrid_results['final_mean'],
              hybrid_mb_pct=hybrid_results['final_mb_pct'],
              hybrid_mb_history=hybrid_results['mb_usage_history'])
-    print(f"\n✅ Saved to {save_path}")
+    print(f"Saved to {save_path}")
     
     return results
 
@@ -871,112 +781,87 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     
     args = parser.parse_args()
-    
-    # Show available environments
-    print("\n" + "="*70)
+
+    print("\n" + "-"*70)
     print("AVAILABLE ENVIRONMENTS")
-    print("="*70)
+    print("-"*70)
     for env_id, config in ENV_CONFIGS.items():
         print(f"\n{env_id}:")
-        print(f"  Dynamics: {config['dynamics']}")
-        print(f"  {config['description']}")
-    print("="*70)
-    
-    # Run based on --only argument
+        print(f"Dynamics: {config['dynamics']}")
+        print(f"{config['description']}")
+    print("-"*70)
+
     all_results = {}
     
     for env_id in args.envs:
         config = ENV_CONFIGS.get(env_id)
         if config is None:
-            print(f"❌ Unknown environment: {env_id}")
+            print(f"Unknown environment: {env_id}")
             continue
         
         results = {"env_id": env_id, "config": config}
-        
-        # ================================================================
-        # SAC ONLY
-        # ================================================================
         if args.only == "sac":
             print(f"\n{'='*70}")
-            print(f"🔷 Training SAC on {env_id}")
+            print(f"Training SAC on {env_id}")
             print(f"{'='*70}")
             sac_results = train_sac(env_id, config, args.seed)
             if sac_results:
                 results["sac"] = sac_results
-                print(f"\n✅ SAC: {sac_results['final_mean']:.2f} ± {sac_results['final_std']:.2f}")
-        
-        # ================================================================
-        # PETS ONLY
-        # ================================================================
+                print(f"\nSAC: {sac_results['final_mean']:.2f} ± {sac_results['final_std']:.2f}")
+
         elif args.only == "pets":
             print(f"\n{'='*70}")
-            print(f"🔶 Training PETS on {env_id}")
+            print(f"Training PETS on {env_id}")
             print(f"{'='*70}")
-            # pets_results = train_pets_baseline(env_id, config, args.seed)
             pets_results = train_pets_improved(env_id, config, args.seed)
             if pets_results:
                 results["pets"] = pets_results
-                print(f"\n✅ PETS: {pets_results['final_mean']:.2f} ± {pets_results['final_std']:.2f}")
-        
-        # ================================================================
-        # HYBRID ONLY (checks for existing SAC)
-        # ================================================================
+                print(f"PETS: {pets_results['final_mean']:.2f} ± {pets_results['final_std']:.2f}")
+
         elif args.only == "hybrid":
             print(f"\n{'='*70}")
-            print(f"🔷 Training Hybrid on {env_id}")
+            print(f"Training Hybrid on {env_id}")
             print(f"{'='*70}")
-            
-            # Check if SAC checkpoint exists
+
             sac_ckpt = f"artifacts/sac_{env_id.replace('-', '_').lower()}.pth"
             
             if not os.path.exists(sac_ckpt):
-                print(f"❌ SAC checkpoint not found: {sac_ckpt}")
-                print(f"   Run with --only sac first, or --only all")
+                print(f"SAC checkpoint not found: {sac_ckpt}")
+                print(f"Run with --only sac first, or --only all")
                 continue
             
-            print(f"✅ Found SAC checkpoint: {sac_ckpt}")
-            
-            # Load SAC results if saved
+            print(f"Found SAC checkpoint: {sac_ckpt}")
+
             results_path = f"results/{env_id.replace('-', '_').lower()}_full.npz"
             if os.path.exists(results_path):
                 saved = np.load(results_path, allow_pickle=True)
                 sac_mean = float(saved['sac_final'])
-                print(f"   SAC baseline: {sac_mean:.2f} (from saved results)")
-            
-            # Train hybrid
+                print(f"SAC baseline: {sac_mean:.2f} (from saved results)")
+
             hybrid_results = train_hybrid(env_id, sac_ckpt, config, args.seed)
             if hybrid_results:
                 results["hybrid"] = hybrid_results
-                print(f"\n✅ Hybrid: {hybrid_results['final_mean']:.2f} ± {hybrid_results['final_std']:.2f}")
-                print(f"   MB Usage: {hybrid_results['final_mb_pct']:.1f}%")
-        
-        # ================================================================
-        # ALL (full experiment)
-        # ================================================================
+                print(f"Hybrid: {hybrid_results['final_mean']:.2f} ± {hybrid_results['final_std']:.2f}")
+                print(f"MB Usage: {hybrid_results['final_mb_pct']:.1f}%")
+
         elif args.only == "all":
             print(f"\n{'='*70}")
-            print(f"🚀 FULL EXPERIMENT: {env_id}")
+            print(f"FULL EXPERIMENT: {env_id}")
             print(f"{'='*70}")
-            
-            # Run full experiment
+
             exp_results = run_full_experiment(env_id, seed=args.seed)
             if exp_results:
                 results = exp_results
-        
-        # Store results
+
         if results:
             all_results[env_id] = results
-    
-    # ================================================================
-    # SUMMARY
-    # ================================================================
+
     if len(all_results) > 0:
         print("\n" + "="*70)
         print("SUMMARY")
         print("="*70)
         
         if args.only == "all":
-            # Full comparison table
             print(f"{'Environment':<30} {'SAC':<12} {'PETS':<12} {'Hybrid':<12} {'MB%'}")
             print("-"*70)
             for env_id, res in all_results.items():
@@ -986,15 +871,14 @@ if __name__ == "__main__":
                 mb_pct = res.get('hybrid', {}).get('final_mb_pct', 0)
                 print(f"{env_id:<30} {sac:>10.1f}  {pets:>10.1f}  {hybrid:>10.1f}  {mb_pct:>6.1f}%")
         else:
-            # Component-specific summary
             for env_id, res in all_results.items():
                 print(f"\n{env_id}:")
                 if args.only == "sac" and "sac" in res:
-                    print(f"  SAC: {res['sac']['final_mean']:.2f} ± {res['sac']['final_std']:.2f}")
+                    print(f"SAC: {res['sac']['final_mean']:.2f} ± {res['sac']['final_std']:.2f}")
                 elif args.only == "pets" and "pets" in res:
-                    print(f"  PETS: {res['pets']['final_mean']:.2f} ± {res['pets']['final_std']:.2f}")
+                    print(f"PETS: {res['pets']['final_mean']:.2f} ± {res['pets']['final_std']:.2f}")
                 elif args.only == "hybrid" and "hybrid" in res:
-                    print(f"  Hybrid: {res['hybrid']['final_mean']:.2f} ± {res['hybrid']['final_std']:.2f}")
-                    print(f"  MB Usage: {res['hybrid']['final_mb_pct']:.1f}%")
+                    print(f"Hybrid: {res['hybrid']['final_mean']:.2f} ± {res['hybrid']['final_std']:.2f}")
+                    print(f"MB Usage: {res['hybrid']['final_mb_pct']:.1f}%")
         
         print("="*70)

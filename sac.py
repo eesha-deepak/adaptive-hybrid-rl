@@ -5,7 +5,6 @@ from typing import Dict, Any
 import gymnasium as gym
 from tqdm import trange
 
-# ---------- tiny utils ----------
 def mlp(sizes, act=nn.ReLU, out_act=nn.Identity):
     layers = []
     for i in range(len(sizes)-1):
@@ -13,7 +12,6 @@ def mlp(sizes, act=nn.ReLU, out_act=nn.Identity):
                    act() if i < len(sizes)-2 else out_act()]
     return nn.Sequential(*layers)
 
-# ---------- replay buffer ----------
 class Buffer:
     def __init__(self, size, obs_dim, act_dim, device="cpu"):
         self.size_limit = size
@@ -46,7 +44,6 @@ class Buffer:
             "dones": torch.as_tensor(self.dones[idx], device=d),
         }
 
-# ---------- tanh-Gaussian policy pieces ----------
 class _TanhDiagGaussian:
     def __init__(self, mu, log_std, act_low, act_high):
         self.mu = mu
@@ -96,11 +93,8 @@ class Critic(nn.Module):
     def forward(self, obs, act):
         return self.q(torch.cat([obs, act], dim=-1))
 
-# ---------- SAC Agent (with auto-α + adaptive UTD) ----------
 class SACAgent:
-    """
-    Soft Actor-Critic with adaptive UTD ratio
-    """
+
     def __init__(self, env_info, lr=3e-4, gamma=0.99, tau=0.005, alpha=0.2,
                  batch_size=256, update_every=1, buffer_size=100000,
                  warmup_steps=2000, utd_ratio=1, device=None):
@@ -125,24 +119,19 @@ class SACAgent:
         self.actor_opt = optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_opt = optim.Adam(list(self.critic1.parameters()) + list(self.critic2.parameters()), lr=lr)
 
-        # Auto entropy temperature (α)
         self.log_alpha = torch.tensor(np.log(alpha), dtype=torch.float32, device=self.device, requires_grad=True)
         self.alpha_opt = optim.Adam([self.log_alpha], lr=lr)
-        # Use -0.5 * act_dim for Pendulum to prevent entropy collapse
         self.target_entropy = -0.5 * float(self.act_dim)
 
         self._buffer = Buffer(size=buffer_size, obs_dim=self.obs_dim, act_dim=self.act_dim, device=self.device.type)
         self.total_steps = 0
 
     def get_utd_ratio(self):
-        """Adaptive UTD: Start with 1, gradually increase to base_utd_ratio"""
         if self.total_steps < self.warmup_steps:
             return 1
-        # Ramp over 10k steps
         progress = min(1.0, max(0.0, (self.total_steps - self.warmup_steps) / 10_000))
         utd = 1 + (self.base_utd_ratio - 1) * progress
         utd = int(max(1, round(utd)))
-        # Cap by how many batches we can draw (avoid thrashing a small buffer)
         max_batches = max(1, self._buffer.size // self.batch_size)
         return min(utd, max_batches)
 
@@ -186,7 +175,6 @@ class SACAgent:
         )
         alpha = self.log_alpha.exp()
 
-        # ----- Critic target -----
         with torch.no_grad():
             dist_next = self.actor(next_obs)
             a_next = dist_next.rsample()
@@ -197,7 +185,6 @@ class SACAgent:
             target_q = r + self.gamma * (1.0 - dones) * (q_min - alpha * logp_next)
             target_q = target_q.detach()
 
-        # ----- Critic update -----
         q1 = self.critic1(obs, actions)
         q2 = self.critic2(obs, actions)
         critic_loss = nn.functional.mse_loss(q1, target_q) + nn.functional.mse_loss(q2, target_q)
@@ -206,7 +193,6 @@ class SACAgent:
         nn.utils.clip_grad_norm_(self.critic2.parameters(), 1.0)
         self.critic_opt.step()
 
-        # ----- Actor update -----
         dist = self.actor(obs)
         a = dist.rsample()
         logp = torch.clamp(dist.log_prob(a), -20, 20)
@@ -216,11 +202,9 @@ class SACAgent:
         nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_opt.step()
 
-        # ----- Temperature (alpha) update -----
         alpha_loss = -(self.log_alpha * (logp + self.target_entropy).detach()).mean()
         self.alpha_opt.zero_grad(); alpha_loss.backward(); self.alpha_opt.step()
 
-        # ----- Target soft-updates -----
         self._soft_update(self.critic1, self.critic1_target)
         self._soft_update(self.critic2, self.critic2_target)
 
@@ -238,9 +222,7 @@ class SACAgent:
         for p, tp in zip(local.parameters(), target.parameters()):
             tp.data.mul_(1 - self.tau).add_(self.tau * p.data)
 
-# ---------- evaluation function ----------
 def evaluate(agent, env, n_episodes=10, deterministic=True):
-    """Evaluate agent with deterministic or stochastic actions"""
     returns = []
     for _ in range(n_episodes):
         obs, _ = env.reset()
@@ -254,7 +236,6 @@ def evaluate(agent, env, n_episodes=10, deterministic=True):
         returns.append(ep_ret)
     return np.mean(returns), np.std(returns)
 
-# ---------- training entrypoint ----------
 def train(env_id="Pendulum-v1", steps=100_000, seed=0, save_path="artifacts/sac_actor_hw.pth"):
     os.makedirs("artifacts", exist_ok=True)
     env = gym.make(env_id)
@@ -270,14 +251,12 @@ def train(env_id="Pendulum-v1", steps=100_000, seed=0, save_path="artifacts/sac_
         "act_low": env.action_space.low,
         "act_high": env.action_space.high,
     }
-    # KEY: Longer warmup (2000) + adaptive UTD that ramps from 1→3
     agent = SACAgent(env_info, device=None, warmup_steps=2000, batch_size=256, utd_ratio=3)
 
     ep_ret, returns = 0.0, []
     eval_returns = []
     
     for step in trange(steps, desc=f"SAC({env_id})"):
-        # Random actions during warmup
         if agent.total_steps < agent.warmup_steps:
             a = env.action_space.sample()
         else:
@@ -290,7 +269,6 @@ def train(env_id="Pendulum-v1", steps=100_000, seed=0, save_path="artifacts/sac_
         if d or tr:
             returns.append(ep_ret); obs, _ = env.reset(); ep_ret = 0.0
         
-        # Periodic evaluation
         if (step + 1) % 5000 == 0:
             eval_mean, eval_std = evaluate(agent, eval_env, n_episodes=10)
             eval_returns.append(eval_mean)
@@ -298,7 +276,6 @@ def train(env_id="Pendulum-v1", steps=100_000, seed=0, save_path="artifacts/sac_
             current_alpha = agent.log_alpha.exp().item()
             print(f"\nStep {step+1}: Eval = {eval_mean:.2f} ± {eval_std:.2f} | UTD={current_utd} | alpha={current_alpha:.4f}")
 
-    # Final evaluation
     eval_mean, eval_std = evaluate(agent, eval_env, n_episodes=20)
     print(f"\n{'='*60}")
     print(f"Final Evaluation (20 episodes): {eval_mean:.2f} ± {eval_std:.2f}")
