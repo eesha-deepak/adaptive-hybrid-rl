@@ -14,8 +14,8 @@ This repository contains code for our research on when and how to combine model-
 ## Installation
 
 ```bash
-git clone https://github.com/eesha-deepak/hybrid-rl.git
-cd hybrid-rl
+git clone https://github.com/eesha-deepak/adaptive-hybrid-rl.git
+cd adaptive-hybrid-rl
 pip install -r requirements.txt
 ```
 
